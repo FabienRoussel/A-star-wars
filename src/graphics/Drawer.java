@@ -131,7 +131,17 @@ public class Drawer {
     public void moveSelectedRobotManually(Direction direction) {
         if (selectedRobotIndex != -1) {
             searchField.getRobotData().moveRobotManually(selectedRobotIndex, direction);
+            if (allRobotsOnGoals()) {
+                playSound(goalReachedSoundIndex);
+            }
         }
+    }
+
+    private boolean allRobotsOnGoals() {
+        for (short i = 0; i < searchField.getRobotData().getRobotsNumber(); i++) {
+            if (!searchField.getRobotData().isRobotOnItsGoal(i)) return false;
+        }
+        return true;
     }
 
     private void drawRobot(short robotIndex) {

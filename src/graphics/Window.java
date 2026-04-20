@@ -1,28 +1,25 @@
 package graphics;
 
 import field.Direction;
-import org.lwjgl.glfw.GLFWErrorCallback;
-import org.lwjgl.glfw.GLFWVidMode;
-import org.lwjgl.glfw.GLFWWindowSizeCallback;
-import org.lwjgl.opengl.GL;
-import org.lwjgl.system.MemoryUtil;
-
+import javax.imageio.ImageIO;
+import javax.swing.*;
+import java.awt.*;
+import java.awt.event.*;
+import java.awt.image.BufferedImage;
 import java.io.IOException;
-
-import static org.lwjgl.glfw.Callbacks.glfwFreeCallbacks;
-import static org.lwjgl.glfw.GLFW.*;
-import static org.lwjgl.opengl.GL11.*;
-import static org.lwjgl.system.MemoryUtil.NULL;
+import java.io.InputStream;
 
 /**
  * Created by Nicolas on 17/10/2016
+ * Rewritten to use Java2D/Swing for macOS Apple Silicon compatibility.
  *
- * This class handles the behaviour of the window with the graphic interface LWJGL.
+ * This class handles the window and all drawing operations.
+ * It replaces the original LWJGL/OpenGL implementation which does not
+ * support the fixed-function pipeline on macOS Sequoia + Apple Silicon.
  */
 
-public class Window {
+public class Window extends JPanel {
 
-    //List of graphic parameters
     public static String DEFAULT_WINDOW_NAME = "Parcel Wars";
     public static int WIDTH = 1080;
     public static int HEIGHT = 720;
@@ -33,287 +30,194 @@ public class Window {
     public static int DELAY_MS = 90;
     public static boolean MUTE = false;
 
-    private long window;
-    private Drawer drawer;
-    private int currentWidth;
-    private int currentHeight;
-    private int screenWidth;
-    private int screenHeight;
-
-    private Texture texture;
-
+    private final Drawer drawer;
+    private final JFrame frame;
+    private volatile boolean running = true;
     private boolean previousIsSearching = false, isSearching = false;
 
+    // Current drawing context — valid only during paintComponent
+    private static Graphics2D g2d;
+    private static java.awt.Color currentColor = java.awt.Color.WHITE;
+
+    // Texture atlas for USE_BITMAPS mode
+    private BufferedImage textureImage;
+    private int textureWidth, textureHeight;
+
     public Window(Drawer drawer) {
-        currentHeight = Window.HEIGHT;
-        currentWidth = Window.WIDTH;
         this.drawer = drawer;
-        this.init();
+        setBackground(java.awt.Color.WHITE);
+        setFocusable(true);
+
+        frame = new JFrame();
+        frame.setDefaultCloseOperation(JFrame.DISPOSE_ON_CLOSE);
+        frame.getContentPane().add(this);
+
+        loadTexture();
+        setDimensions();
+
+        // Key handling — registered on both frame and panel for macOS compatibility
+        KeyAdapter keyHandler = new KeyAdapter() {
+            @Override
+            public void keyPressed(KeyEvent e) {
+                switch (e.getKeyCode()) {
+                    case KeyEvent.VK_UP:    drawer.moveSelectedRobotManually(Direction.UP);    break;
+                    case KeyEvent.VK_DOWN:  drawer.moveSelectedRobotManually(Direction.DOWN);  break;
+                    case KeyEvent.VK_LEFT:  drawer.moveSelectedRobotManually(Direction.LEFT);  break;
+                    case KeyEvent.VK_RIGHT: drawer.moveSelectedRobotManually(Direction.RIGHT); break;
+                }
+            }
+            @Override
+            public void keyReleased(KeyEvent e) {
+                int key = e.getKeyCode();
+                if (key == KeyEvent.VK_ESCAPE) {
+                    running = false;
+                    frame.dispose();
+                } else if (key == KeyEvent.VK_D) {
+                    frame.setTitle(DEFAULT_WINDOW_NAME + " - " + drawer.getLevelName() + " - A* Searching: Dijkstra heuristic");
+                    drawer.launchAStarWithDijkstra();
+                    frame.setTitle(DEFAULT_WINDOW_NAME + " - " + drawer.getLevelName());
+                } else if (key == KeyEvent.VK_SEMICOLON || key == KeyEvent.VK_M) {
+                    frame.setTitle(DEFAULT_WINDOW_NAME + " - " + drawer.getLevelName() + " - A* Searching: Manhattan heuristic");
+                    drawer.launchAStarWithManhattan();
+                    frame.setTitle(DEFAULT_WINDOW_NAME + " - " + drawer.getLevelName());
+                } else if (key == KeyEvent.VK_E) {
+                    frame.setTitle(DEFAULT_WINDOW_NAME + " - " + drawer.getLevelName() + " - A* Searching: Euclide heuristic");
+                    drawer.launchAStarWithEuclide();
+                    frame.setTitle(DEFAULT_WINDOW_NAME + " - " + drawer.getLevelName());
+                } else if (key == KeyEvent.VK_S) {
+                    if (MUTE) { MUTE = false; drawer.unMuteSounds(); }
+                    else      { MUTE = true;  drawer.muteSounds();   }
+                } else if (key == KeyEvent.VK_G) {
+                    USE_BITMAPS = !USE_BITMAPS;
+                } else if (key >= KeyEvent.VK_0 && key <= KeyEvent.VK_9) {
+                    isSearching = previousIsSearching = false;
+                    drawer.setSearchField("level" + (key - KeyEvent.VK_0));
+                    frame.setTitle(DEFAULT_WINDOW_NAME + " - " + drawer.getLevelName());
+                    setDimensions();
+                }
+            }
+        };
+        frame.addKeyListener(keyHandler);
+        this.addKeyListener(keyHandler);
+
+        // Mouse handling
+        addMouseListener(new MouseAdapter() {
+            @Override
+            public void mousePressed(MouseEvent e) {
+                requestFocusInWindow();
+                if (SwingUtilities.isLeftMouseButton(e)) {
+                    double xPos = (double) WIDTH  * e.getX() / getWidth();
+                    double yPos = (double) HEIGHT * e.getY() / getHeight();
+                    drawer.selectRobotAtScreenPos(xPos, yPos);
+                }
+            }
+        });
+
+        frame.addWindowListener(new WindowAdapter() {
+            @Override
+            public void windowClosed(WindowEvent e) {
+                running = false;
+            }
+        });
+
+        frame.setVisible(true);
+        SwingUtilities.invokeLater(() -> {
+            frame.toFront();
+            frame.requestFocus();
+            this.requestFocusInWindow();
+        });
     }
 
     public void run() {
-        try {
-            loop();
-
-            glfwFreeCallbacks(window);
-            glfwDestroyWindow(window);
-        } finally {
-            glfwTerminate();
-            glfwSetErrorCallback(null).free();
-        }
-    }
-
-    private void init() {
-        // Setup an error callback. The default implementation will print the error message in System.err.
-        GLFWErrorCallback.createPrint(System.err).set();
-
-        // Initialize GLFW. Most GLFW functions will not work before doing this.
-        if (!glfwInit()) throw new IllegalStateException("Unable to initialize GLFW");
-
-        // Configure our window
-        glfwDefaultWindowHints(); // optional, the current window hints are already the default
-        glfwWindowHint(GLFW_VISIBLE, GLFW_FALSE); // the window will stay hidden after creation
-        glfwWindowHint(GLFW_RESIZABLE, GLFW_TRUE); // the window will be resizable
-
-        // Create the window
-        window = glfwCreateWindow(WIDTH, HEIGHT, DEFAULT_WINDOW_NAME + " - " + drawer.getLevelName(), (FULL_SCREEN ? glfwGetPrimaryMonitor() : NULL), MemoryUtil.NULL);
-        if (window == MemoryUtil.NULL)
-            throw new RuntimeException("Failed to create the GLFW window");
-
-        // Setup a key callback. It will be called every time a key is pressed, repeated or released.
-        glfwSetKeyCallback(window, (window, key, scanCode, action, mods) -> {
-            if (key == GLFW_KEY_ESCAPE && action == GLFW_RELEASE) {
-                glfwSetWindowShouldClose(window, true); // We will detect this in our rendering loop
-            } else if (key == GLFW_KEY_D && action == GLFW_RELEASE) {                                   //Launch search algorithms
-                glfwSetWindowTitle(window, DEFAULT_WINDOW_NAME + " - " + drawer.getLevelName() + " - A* Searching: Dijkstra heuristic");
-                drawer.launchAStarWithDijkstra();
-                glfwSetWindowTitle(window, DEFAULT_WINDOW_NAME + " - " + drawer.getLevelName());
-            } else if (key == GLFW_KEY_SEMICOLON && action == GLFW_RELEASE) {
-                glfwSetWindowTitle(window, DEFAULT_WINDOW_NAME + " - " + drawer.getLevelName() + " - A* Searching: Manhattan heuristic");
-                drawer.launchAStarWithManhattan();
-                glfwSetWindowTitle(window, DEFAULT_WINDOW_NAME + " - " + drawer.getLevelName());
-            } else if (key == GLFW_KEY_E && action == GLFW_RELEASE) {
-                glfwSetWindowTitle(window, DEFAULT_WINDOW_NAME + " - " + drawer.getLevelName() + " - A* Searching: Euclide heuristic");
-                drawer.launchAStarWithEuclide();
-                glfwSetWindowTitle(window, DEFAULT_WINDOW_NAME + " - " + drawer.getLevelName());
-            } else if (key == GLFW_KEY_S && action == GLFW_RELEASE) {                                   //Mute / UnMute
-                if (Window.MUTE) {
-                    Window.MUTE = false;
-                    drawer.unMuteSounds();
-                } else {
-                    Window.MUTE = true;
-                    drawer.muteSounds();
-                }
-            } else if (key == GLFW_KEY_UP && action == GLFW_PRESS) {                                    //Move robots manually
-                drawer.moveSelectedRobotManually(Direction.UP);
-            } else if (key == GLFW_KEY_DOWN && action == GLFW_PRESS) {
-                drawer.moveSelectedRobotManually(Direction.DOWN);
-            } else if (key == GLFW_KEY_LEFT && action == GLFW_PRESS) {
-                drawer.moveSelectedRobotManually(Direction.LEFT);
-            } else if (key == GLFW_KEY_RIGHT && action == GLFW_PRESS) {
-                drawer.moveSelectedRobotManually(Direction.RIGHT);
-            } else if (key == GLFW_KEY_0 && action == GLFW_RELEASE) {                                   //Load levels
-                isSearching = previousIsSearching = false;
-                drawer.setSearchField("level0");
-                glfwSetWindowTitle(window, DEFAULT_WINDOW_NAME + " - " + drawer.getLevelName());
-                setDimensions();
-            } else if (key == GLFW_KEY_1 && action == GLFW_RELEASE) {
-                isSearching = previousIsSearching = false;
-                drawer.setSearchField("level1");
-                glfwSetWindowTitle(window, DEFAULT_WINDOW_NAME + " - " + drawer.getLevelName());
-                setDimensions();
-            } else if (key == GLFW_KEY_2 && action == GLFW_RELEASE) {
-                isSearching = previousIsSearching = false;
-                drawer.setSearchField("level2");
-                glfwSetWindowTitle(window, DEFAULT_WINDOW_NAME + " - " + drawer.getLevelName());
-                setDimensions();
-            } else if (key == GLFW_KEY_3 && action == GLFW_RELEASE) {
-                isSearching = previousIsSearching = false;
-                drawer.setSearchField("level3");
-                glfwSetWindowTitle(window, DEFAULT_WINDOW_NAME + " - " + drawer.getLevelName());
-                setDimensions();
-            } else if (key == GLFW_KEY_4 && action == GLFW_RELEASE) {
-                isSearching = previousIsSearching = false;
-                drawer.setSearchField("level4");
-                glfwSetWindowTitle(window, DEFAULT_WINDOW_NAME + " - " + drawer.getLevelName());
-                setDimensions();
-            } else if (key == GLFW_KEY_5 && action == GLFW_RELEASE) {
-                isSearching = previousIsSearching = false;
-                drawer.setSearchField("level5");
-                glfwSetWindowTitle(window, DEFAULT_WINDOW_NAME + " - " + drawer.getLevelName());
-                setDimensions();
-            } else if (key == GLFW_KEY_6 && action == GLFW_RELEASE) {
-                isSearching = previousIsSearching = false;
-                drawer.setSearchField("level6");
-                glfwSetWindowTitle(window, DEFAULT_WINDOW_NAME + " - " + drawer.getLevelName());
-                setDimensions();
-            } else if (key == GLFW_KEY_7 && action == GLFW_RELEASE) {
-                isSearching = previousIsSearching = false;
-                drawer.setSearchField("level7");
-                glfwSetWindowTitle(window, DEFAULT_WINDOW_NAME + " - " + drawer.getLevelName());
-                setDimensions();
-            } else if (key == GLFW_KEY_8 && action == GLFW_RELEASE) {
-                isSearching = previousIsSearching = false;
-                drawer.setSearchField("level8");
-                glfwSetWindowTitle(window, DEFAULT_WINDOW_NAME + " - " + drawer.getLevelName());
-                setDimensions();
-            } else if (key == GLFW_KEY_9 && action == GLFW_RELEASE) {
-                isSearching = previousIsSearching = false;
-                drawer.setSearchField("level9");
-                glfwSetWindowTitle(window, DEFAULT_WINDOW_NAME + " - " + drawer.getLevelName());
-                setDimensions();
-            } else if (key == GLFW_KEY_G && action == GLFW_RELEASE) {                                           //Toggle the use of bitmaps
-                USE_BITMAPS = !USE_BITMAPS;
-            }
-        });
-        //Mouse callback event: select robots
-        glfwSetMouseButtonCallback(window, (window, button, action, mods) -> {
-            if (button == GLFW_MOUSE_BUTTON_LEFT && action == GLFW_PRESS) {
-                double xPos[] = new double[2];
-                double yPos[] = new double[2];
-                glfwGetCursorPos(window, xPos, yPos);
-                drawer.selectRobotAtScreenPos(Window.WIDTH * xPos[0] / currentWidth, Window.HEIGHT * yPos[0] / currentHeight);
-            }
-        });
-
-        glfwSetCursorPosCallback(window, (l, v, v1) -> {
-        });
-
-        // Get the resolution of the primary monitor
-        GLFWVidMode vidMode = glfwGetVideoMode(glfwGetPrimaryMonitor());
-        screenHeight = vidMode.height();
-        screenWidth = vidMode.width();
-        // Center our window
-        glfwSetWindowPos(window, (vidMode.width() - WIDTH) / 2, (vidMode.height() - HEIGHT) / 2);
-        // Make the OpenGL context current
-        glfwMakeContextCurrent(window);
-        // Enable v-sync
-        glfwSwapInterval(1);
-        // Make the window visible
-        glfwShowWindow(window);
-    }
-
-    private void loop() {
-        GL.createCapabilities();
-        //Allows resizing the window and the drawings
-        glfwSetWindowSizeCallback(window, new GLFWWindowSizeCallback() {
-            @Override
-            public void invoke(long window, int width, int height) {
-                glViewport(0, 0, width, height);
-                currentHeight = height;
-                currentWidth = width;
-                drawer.updateRatios();
-            }
-        });
-        //Enable transparency
-        glEnable(GL_BLEND);
-        glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
-        //Load bank of images
-        loadTexture();
-        //Define the clear color
-        glClearColor(Color.WHITE.getRedValue(), Color.WHITE.getGreenValue(), Color.WHITE.getBlueValue(), 1.0f);
-        //Initiate the dimensions of the window
-        setDimensions();
-        while (!glfwWindowShouldClose(window)) {
-            glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT); // clear the framebuffer
-
-            //Drawing matrix to the screen
-            drawer.drawMatrix();
-
-            //Updating robots position if they are currently going through their path after A* search
+        javax.swing.Timer timer = new javax.swing.Timer(DELAY_MS, e -> {
             isSearching = drawer.updateMatrix();
-            //Playing goalReachedSound if robots just ended their path
             if (!isSearching && previousIsSearching) {
                 drawer.playSound(drawer.goalReachedSoundIndex);
             }
             previousIsSearching = isSearching;
+            repaint();
+        });
+        timer.start();
 
-            //Some necessary graphic commands
-            glMatrixMode(GL_PROJECTION);
-            glLoadIdentity();
-            glOrtho(0, WIDTH, HEIGHT, 0, 1, -1);
-            glMatrixMode(GL_MODELVIEW);
-            glfwSwapBuffers(window); // swap the color buffers
-
-            //Poll for window events. The key callback above will only be invoked during this call.
-            glfwPollEvents();
+        while (running) {
+            try { Thread.sleep(50); } catch (InterruptedException e) { break; }
         }
+        timer.stop();
+    }
+
+    @Override
+    protected void paintComponent(Graphics g) {
+        super.paintComponent(g);
+        g2d = (Graphics2D) g.create();
+        g2d.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_OFF);
+        // Scale so all drawing code can use WIDTH/HEIGHT coordinates regardless of actual window size
+        g2d.scale((double) getWidth() / WIDTH, (double) getHeight() / HEIGHT);
+        g2d.setColor(java.awt.Color.WHITE);
+        g2d.fillRect(0, 0, WIDTH, HEIGHT);
+        drawer.drawMatrix();
+        g2d.dispose();
+        g2d = null;
     }
 
     private void loadTexture() {
-        try {
-            texture = new Texture("texture");
+        try (InputStream input = getClass().getResourceAsStream("/resources/textures/texture.png")) {
+            if (input != null) {
+                textureImage = ImageIO.read(input);
+                if (textureImage != null) {
+                    textureWidth  = textureImage.getWidth();
+                    textureHeight = textureImage.getHeight();
+                }
+            }
         } catch (IOException e) {
             e.printStackTrace();
         }
     }
 
+    public static void setColor(Color color) {
+        currentColor = new java.awt.Color(color.getRedValue(), color.getGreenValue(), color.getBlueValue());
+        if (g2d != null) g2d.setColor(currentColor);
+    }
+
     public void drawTexturedQuad(float startPosX, float startPosY, float width, float height, ImageData imageData) {
-        setColor(Color.WHITE);
-        glPushMatrix();
-        glTranslatef(startPosX, startPosY, 0);
-        glBegin(GL_QUADS);
-        glBindTexture(GL_TEXTURE_2D, texture.id);
-        //Top left corner
-        glTexCoord2f(imageData.getTextureRangeX1(), imageData.getTextureRangeY1());
-        glVertex2f(0, 0);
-        //Bottom left corner
-        glTexCoord2f(imageData.getTextureRangeX1(), imageData.getTextureRangeY2());
-        glVertex2f(0, height);
-        //Bottom right corner
-        glTexCoord2f(imageData.getTextureRangeX2(), imageData.getTextureRangeY2());
-        glVertex2f(width, height);
-        //Top right corner
-        glTexCoord2f(imageData.getTextureRangeX2(), imageData.getTextureRangeY1());
-        glVertex2f(width, 0);
-        glEnd();
-        glPopMatrix();
+        if (g2d == null || textureImage == null) return;
+        int texX = (int)(imageData.getTextureRangeX1() * textureWidth);
+        int texY = (int)(imageData.getTextureRangeY1() * textureHeight);
+        int texW = (int)((imageData.getTextureRangeX2() - imageData.getTextureRangeX1()) * textureWidth);
+        int texH = (int)((imageData.getTextureRangeY2() - imageData.getTextureRangeY1()) * textureHeight);
+        texX = Math.max(0, Math.min(texX, textureWidth  - 1));
+        texY = Math.max(0, Math.min(texY, textureHeight - 1));
+        texW = Math.max(1, Math.min(texW, textureWidth  - texX));
+        texH = Math.max(1, Math.min(texH, textureHeight - texY));
+        g2d.drawImage(textureImage.getSubimage(texX, texY, texW, texH),
+                (int) startPosX, (int) startPosY, (int) width, (int) height, null);
     }
 
     public void drawRectangle(float xTopLeft, float yTopLeft, float xBottomRight, float yBottomRight) {
-        glDisable(GL_TEXTURE_2D);
-        glBegin(GL_QUADS);
-        glVertex2f(xTopLeft, yTopLeft);
-        glVertex2f(xTopLeft, yBottomRight);
-        glVertex2f(xBottomRight, yBottomRight);
-        glVertex2f(xBottomRight, yTopLeft);
-        glEnd();
-        glEnable(GL_TEXTURE_2D);
+        if (g2d == null) return;
+        g2d.setColor(currentColor);
+        g2d.fillRect((int) xTopLeft, (int) yTopLeft,
+                (int)(xBottomRight - xTopLeft), (int)(yBottomRight - yTopLeft));
     }
 
     public void drawLine(float lineWidth, float x1, float y1, float x2, float y2) {
-        glDisable(GL_BLEND);
-        glLineWidth(lineWidth);
-        glBegin(GL_LINES);
-        glVertex2f(x1, y1);
-        glVertex2f(x2, y2);
-        glEnd();
-        glEnable(GL_BLEND);
-        glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
-    }
-
-    public static void setColor(Color color) {
-        glColor3f(color.getRedValue(), color.getGreenValue(), color.getBlueValue());
+        if (g2d == null) return;
+        g2d.setColor(currentColor);
+        g2d.setStroke(new BasicStroke(lineWidth));
+        g2d.drawLine((int) x1, (int) y1, (int) x2, (int) y2);
     }
 
     private void setDimensions() {
-        //Calculate dimensions so blocks are always squares and are not over-sized or under-sized.
-        int dimW = (int) Math.ceil(0.95f * screenWidth / drawer.getLevelColumnNumber());
-        int dimH = (int) Math.ceil(0.9f * screenHeight / drawer.getLevelRowNumber());
-        if (dimW < dimH) {
-            WIDTH = dimW * drawer.getLevelColumnNumber();
-            HEIGHT = dimW * drawer.getLevelRowNumber();
-        } else {
-            WIDTH = dimH * drawer.getLevelColumnNumber();
-            HEIGHT = dimH * drawer.getLevelRowNumber();
-        }
-        //Update drawing multipliers
+        Dimension screen = Toolkit.getDefaultToolkit().getScreenSize();
+        int cols = drawer.getLevelColumnNumber();
+        int rows = drawer.getLevelRowNumber();
+        int dimW = (int) Math.ceil(0.95f * screen.width  / cols);
+        int dimH = (int) Math.ceil(0.90f * screen.height / rows);
+        if (dimW < dimH) { WIDTH = dimW * cols; HEIGHT = dimW * rows; }
+        else             { WIDTH = dimH * cols; HEIGHT = dimH * rows; }
         drawer.updateRatios();
-        //Loading value for drawing sizes multiplier
-        glViewport(0, 0, WIDTH, HEIGHT);
-        //Resize window
-        glfwSetWindowSize(window, WIDTH, HEIGHT);
-        //Center the window
-        glfwSetWindowPos(window, (screenWidth - WIDTH) / 2, (screenHeight - HEIGHT) / 2);
+        setPreferredSize(new Dimension(WIDTH, HEIGHT));
+        frame.setTitle(DEFAULT_WINDOW_NAME + " - " + drawer.getLevelName());
+        frame.pack();
+        frame.setLocationRelativeTo(null);
     }
 }

@@ -1,7 +1,5 @@
 package robots;
 
-import javafx.util.Pair;
-
 /**
  * Created by Nicolas on 11/10/2016
  *
@@ -12,18 +10,22 @@ import javafx.util.Pair;
  * We should not need to modify the values after creating the object. So there is no need for setters.
  */
 
-class KeyRobotLocations extends Pair<Integer,Integer> {
+class KeyRobotLocations {
+
+    private final int startLocation;
+    private final int goalLocation;
 
     KeyRobotLocations(int startLocation, int goalLocation) {
-        super(startLocation,goalLocation);
+        this.startLocation = startLocation;
+        this.goalLocation = goalLocation;
     }
 
     short getStartLocation() {
-        return super.getKey().shortValue();
+        return (short) startLocation;
     }
 
     short getGoalLocation() {
-        return super.getValue().shortValue();
+        return (short) goalLocation;
     }
 
 }

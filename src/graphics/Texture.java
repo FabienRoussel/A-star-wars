@@ -1,8 +1,9 @@
 package graphics;
 
-import de.matthiasmann.twl.utils.PNGDecoder;
 import org.lwjgl.BufferUtils;
 
+import javax.imageio.ImageIO;
+import java.awt.image.BufferedImage;
 import java.io.IOException;
 import java.io.InputStream;
 import java.nio.ByteBuffer;
@@ -72,12 +73,14 @@ public class Texture {
             //get an InputStream from our URL
             input = getClass().getResourceAsStream("/resources/textures/"+textureName+".png");
 
-            //initialize the decoder
-            PNGDecoder dec = new PNGDecoder(input);
+            //load image using ImageIO
+            BufferedImage image = ImageIO.read(input);
+            BufferedImage rgbaImage = new BufferedImage(image.getWidth(), image.getHeight(), BufferedImage.TYPE_INT_ARGB);
+            rgbaImage.getGraphics().drawImage(image, 0, 0, null);
 
             //set up image dimensions
-            width = dec.getWidth();
-            height = dec.getHeight();
+            width = rgbaImage.getWidth();
+            height = rgbaImage.getHeight();
 
             //we are using RGBA, i.e. 4 components or "bytes per pixel"
             final int bpp = 4;
@@ -86,7 +89,13 @@ public class Texture {
             ByteBuffer buf = BufferUtils.createByteBuffer(bpp * width * height);
 
             //decode the image into the byte buffer, in RGBA format
-            dec.decode(buf, width * bpp, PNGDecoder.Format.RGBA);
+            int[] pixels = rgbaImage.getRGB(0, 0, width, height, null, 0, width);
+            for (int pixel : pixels) {
+                buf.put((byte) ((pixel >> 16) & 0xFF)); // R
+                buf.put((byte) ((pixel >> 8)  & 0xFF)); // G
+                buf.put((byte) ( pixel        & 0xFF)); // B
+                buf.put((byte) ((pixel >> 24) & 0xFF)); // A
+            }
 
             //flip the buffer into "read mode" for OpenGL
             buf.flip();
