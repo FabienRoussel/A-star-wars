@@ -155,8 +155,25 @@ public class Window extends JPanel {
         g2d.setColor(java.awt.Color.WHITE);
         g2d.fillRect(0, 0, WIDTH, HEIGHT);
         drawer.drawMatrix();
+        drawScore();
         g2d.dispose();
         g2d = null;
+    }
+
+    private void drawScore() {
+        String text = "Score: " + drawer.getScore();
+        Font font = new Font("Arial", Font.BOLD, 20);
+        g2d.setFont(font);
+        FontMetrics fm = g2d.getFontMetrics();
+        int padding = 8;
+        int textW = fm.stringWidth(text);
+        int textH = fm.getHeight();
+        int x = WIDTH - textW - padding * 2 - 10;
+        int y = 10;
+        g2d.setColor(new java.awt.Color(0, 0, 0, 150));
+        g2d.fillRoundRect(x, y, textW + padding * 2, textH + padding, 8, 8);
+        g2d.setColor(java.awt.Color.WHITE);
+        g2d.drawString(text, x + padding, y + textH - fm.getDescent() + padding / 2);
     }
 
     private void loadTexture() {

@@ -31,6 +31,7 @@ public class Drawer {
 
     private ArrayList<BlockType> blockTypesOrder;
     private short selectedRobotIndex = -1;
+    private int score = 0;
 
     public final short inactivitySoundIndex = 0;
     public final short searchingSoundIndex = 1;
@@ -54,10 +55,13 @@ public class Drawer {
         window.run();
     }
 
+    public int getScore() { return score; }
+
     //This method is used every time a level is (re-)loaded
     public boolean setSearchField(String levelName) {
         //UnSelect robots
         selectedRobotIndex = -1;
+        score = 0;
         //Restart the inactivity sound
         playSound(inactivitySoundIndex);
         //Load the level data
@@ -130,7 +134,13 @@ public class Drawer {
 
     public void moveSelectedRobotManually(Direction direction) {
         if (selectedRobotIndex != -1) {
+            short posBefore = searchField.getRobotData().getRobotAtIndex(selectedRobotIndex).getCurrentLocation();
             searchField.getRobotData().moveRobotManually(selectedRobotIndex, direction);
+            short posAfter = searchField.getRobotData().getRobotAtIndex(selectedRobotIndex).getCurrentLocation();
+            if (posAfter != posBefore) {
+                BlockType landedOn = searchField.getBlocktypeFromPos(posAfter);
+                score += (landedOn == BlockType.TRAP) ? 5 : 1;
+            }
             if (allRobotsOnGoals()) {
                 playSound(goalReachedSoundIndex);
             }
